@@ -16,3 +16,5 @@ data/*.csv
 data/sources.json
 data/_instructor/
 day09-data.zip
+dataset/day09-data/
+.idea/
