@@ -1,95 +1,92 @@
 # REPORT — Lab Day 9
 
-> Điền **bằng lời và số liệu của chính bạn** (lấy từ đầu ra của `scripts/lab.sh step ...` và từ `report/evidence/*.json`). Bài làm công khai trên GitHub; giảng viên đối chiếu với lịch sử commit và với bài của các bạn khác. Mỗi câu 3 đến 8 dòng là đủ.
-
 | | |
 |---|---|
-| Họ và tên | `<điền>` |
-| MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `<điền>` |
-| GitHub | `<điền: tên tài khoản>` |
-| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `<điền: trip-xxxxx>` |
+| Họ và tên | Đinh Quốc Bảo |
+| MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `2A202602933` |
+| GitHub | `nova-io-vn` |
+| Trip dùng cho bài tập sập và chạy lại | `trip-04868` (phần số MSSV `202602933 mod 26 = 13`, map index 13) |
 
 ## Kết quả cuối
 
-- `dataset_version` của bạn: `<điền>`  (phải khớp `report/evidence/run_summary.json`)
-- Số khung hình train / val / test của bạn: `<điền>`
-- `report/verify.txt`: tạo bằng `python3 scripts/check_submission.py --save-verify` (phải có `27/27 checks passed`).
-- Ảnh chụp trong `report/screenshots/`: `airflow_graph.png`, `minio_lake.png`, `metabase_dashboard.png`, và ảnh bài tập sập/chạy lại (log task đỏ thấy trip của bạn).
+- `dataset_version` của bạn: `3b85ec0fa3d1` (khớp `report/evidence/run_summary.json`).
+- Số khung hình train / val / test: **723 / 167 / 129**, tổng **1.019** khung từ 26 trip.
+- Kiểm tra tự động: **27/27 checks passed**; cả hai DAG run cuối đều `success`.
+- Ảnh bằng chứng chính: `airflow_graph.png`, `minio_lake.png`, `metabase_dashboard.png`. Bài tập lỗi có thêm `airflow_failed_log.png` và `airflow_failed_mapped_tasks.png`.
 
 ## Bước 1 · Bronze
 
 ### Câu 1
-Liệt kê **ít nhất 4 khác biệt** giữa telemetry nguồn A và nguồn B mà bạn thấy ở bronze. Vì sao pipeline giữ **mỗi nguồn một bảng bronze** và để mọi cột ở dạng chữ, thay vì gộp và ép kiểu ngay?
 
-(trả lời ở đây)
+Nguồn A dùng `ts_utc` dạng ISO UTC, `speed_mps`, `heading_deg`, `gas/brake/steer`; nguồn B dùng `timestamp_ms` dạng epoch-ms, `spd_kmh`, `hdg`, `throttle_pct/brake_pct/steering`. B còn có đồng hồ nhanh **1.500 ms**, trong khi A không lệch; số dòng thô cũng khác nhau: A **3.021**, B **3.234**. Bronze giữ hai nguồn riêng và giữ giá trị dạng chữ để không mất dấu schema/đơn vị gốc, không làm hỏng cả batch khi gặp giá trị thiếu hoặc vô lý, đồng thời cho phép viết lại quy tắc chuẩn hóa mà không cần ingest lại video/CSV.
 
 ## Bước 2 · Silver telemetry
 
 ### Câu 2
-Pipeline đưa hai nguồn về một schema như thế nào (đơn vị, kiểu thời gian, **độ lệch đồng hồ**)? Bằng chứng nào trong kết quả bước 2 cho thấy đã đúng? Dán bảng quarantine của bạn (số dòng theo từng lý do, từng drive) và giải thích vì sao dòng lỗi vào `rejects` thay vì bị xoá.
 
-(trả lời ở đây)
+Staging đổi tốc độ B từ km/h sang m/s, bàn đạp từ phần trăm về tỷ lệ, epoch-ms thành timestamp UTC và trừ offset **1.500 ms**; sau đó cast hai nguồn về cùng schema. Bằng chứng: thời điểm đầu B là `2025-10-08 14:30:00.009+00:00`, chỉ lệch 9 ms so với video, tốc độ cực đại hợp lệ là **71 km/h (A)** và **100 km/h (B)**. Mỗi drive có quarantine: `duplicate=20`, `speed_missing=30`, `speed_out_of_range=3`; dữ liệu sạch lần lượt **2.968** và **3.181**, nên sạch + 53 rejects đúng bằng 3.021/3.234 dòng nhận vào. Rejects giữ lại dòng lỗi và lý do để audit/sửa luật/replay, thay vì xóa mất bằng chứng nguồn.
 
 ### Câu 3
-Vì sao test `max_gap_ms` là `warn` còn `in_range` là `error`? Kết quả thí nghiệm `break-gate` của bạn (`break_gate.json`): test nào bắt được, bao nhiêu dòng, và điều đó cho biết gì về vai trò của "cổng chất lượng"?
 
-(trả lời ở đây)
+`max_gap_ms` là `warn` vì mất tín hiệu tạo khoảng trống nhưng các mẫu còn lại vẫn đúng; pipeline có thể gắn `sync_lost` và tiếp tục. `in_range` là `error` vì tốc độ ngoài 0–70 m/s có thể làm sai feature, thống kê và nhãn, nên phải chặn downstream. Trong `break_gate.json`, khi nới luật làm sạch lên 1.000 m/s, test `in_range_silver_telemetry_speed_mps__70__0` bắt đúng **6 dòng**, kết quả `PASS=5 WARN=1 ERROR=1`; khôi phục luật cho `PASS=6 WARN=1 ERROR=0`. Điều này chứng minh cổng dbt là lớp phòng thủ độc lập với transformation.
 
 ## Bước 3 · Silver frames
 
 ### Câu 4
-Dựa vào `idempotency.json`: số dòng trước và sau hai lần chạy lại, và khi ghi kiểu `append`. Vì sao Delta `overwrite` theo partition (một trip) an toàn hơn xoá rồi ghi lại, nhất là khi giữa chừng có lỗi?
 
-(trả lời ở đây)
+Theo `idempotency.json`, bảng có **1.246 dòng** trước và vẫn **1.246 dòng** sau hai lần chạy lại `trip-00003`; fingerprint giữ nguyên `6c7480dfde7e`. Trip có 60 khung, nhưng cách ghi `append` hai lần tạo **120 dòng (2x)**. Delta `overwrite` theo predicate `trip_id` tạo commit nguyên tử cho đúng partition: reader hoặc thấy bản cũ hoặc bản mới hoàn chỉnh. Cách “xóa rồi ghi” có khoảng hở và có thể để partition thiếu nếu tiến trình sập giữa hai thao tác.
 
 ### Câu 5
-Khung hình **đen** và khung hình **tối** khác nhau thế nào, pipeline xử lý khác nhau ra sao, bạn có đồng ý không? Dựa vào `threshold.json`: nếu chọn ngưỡng 0, 2, 6 thì bao nhiêu khung bị coi là trùng ở mỗi drive? Bạn chọn ngưỡng nào, vì sao, và ngưỡng đó phụ thuộc vào tốc độ xe thế nào?
+
+Khung đen là lỗi/mất nội dung (A **6**, B **4**) nên bị loại; khung tối vẫn còn cảnh hữu ích (A **4**, B **61**) nên chỉ gắn cờ và giữ lại. Kết quả độ nhạy dHash:
 
 | dHash khác tối đa | số khung trùng, drive A | số khung trùng, drive B |
-|---|---|---|
-| 0 | | |
-| 2 | | |
-| 6 | | |
+|---|---:|---:|
+| 0 | 61 | 8 |
+| 2 | 149 | 53 |
+| 6 | 363 | 244 |
 
-(trả lời ở đây)
+Mình chọn ngưỡng **2** như pipeline: nó bắt frozen/near-duplicate nhưng chưa tăng mạnh như ngưỡng 6, vốn có nguy cơ loại cảnh thật. Khi xe chạy chậm, các khung liên tiếp tự nhiên thay đổi ít nên dHash nhỏ; cùng một ngưỡng sẽ loại nhiều hơn ở đoạn chậm, vì vậy khi đổi FPS/camera/tốc độ cần hiệu chỉnh lại.
 
 ## Bước 4 · Gold
 
 ### Câu 6
-Dựa vào `leakage.json`: chia theo khung hình làm bao nhiêu trip bị chia cắt, so với chia theo trip? Vì sao điều này làm điểm kiểm thử đẹp một cách giả tạo?
 
-(trả lời ở đây)
+`leakage.json` có **1.019** khung dùng được thuộc 26 trip. Chia ngẫu nhiên theo frame làm **26/26 trip** xuất hiện ở nhiều split và cả **26/26** có frame ở train lẫn test; chia theo trip của Gold có **0** trip bị cắt. Các frame liền nhau gần như giống nhau, nên split theo frame đưa “hàng xóm” của ảnh test vào train. Mô hình có thể ghi nhớ cảnh thay vì tổng quát hóa, khiến metric test đẹp giả tạo.
 
 ### Câu 7
-Vì sao `dataset_version` là **băm nội dung** chứ không phải ngày giờ hay số đếm? Hai lần chạy liên tiếp cho kết quả gì? Vì sao `dataset_version` của bạn **khác** bạn bè dù cùng dữ liệu (liên hệ MSSV)?
 
-(trả lời ở đây)
+`dataset_version=3b85ec0fa3d1` là hash của nội dung/manifest nên cùng đầu vào và luật sẽ cho cùng phiên bản, không phụ thuộc giờ chạy; cả lần chạy trực tiếp và hai DAG run đều cho cùng version. Dùng ngày giờ hoặc số đếm sẽ tạo version khác dù dữ liệu không đổi và không hỗ trợ kiểm tra tái lập. MSSV được salt vào thứ tự MD5 của trip; MSSV khác làm trip đổi split, tập ảnh theo train/val/test và manifest thay đổi, do đó hash/version khác dù raw data giống nhau.
 
 ### Câu 8
-Đọc phần `lineage` trong `manifest.json` của dataset bạn. Trả lời "dataset này được tạo từ dữ liệu nào?" bằng chính nội dung đó. Nếu một người hỏi 3 tháng sau, thông tin nào giúp tái tạo lại đúng dataset này?
 
-(trả lời ở đây)
+Manifest hiện tại ghi lineage: `bronze.raw_telemetry_a=0`, `bronze.raw_telemetry_b=0`, `bronze.trips_raw=0`, `bronze.video_files=1`; `silver.frames=25`, `silver.telemetry=0`, `silver.frames_flagged=0`, `silver.frame_telemetry=0`. SHA-256 video là `636ba1a98dfc5ba665d1c935e1d2064e69f4df360ff9ffbd15795957d5e7e9aa` (A) và `bfa62703f645ff77a8578ae3fc74a00881140d38a404d43c8e2af265bbee9fdc` (B); manifest hash là `ff575d1c4f0d6fb44fc1fbc323b6423e894ad3b636ca0db4bfb30d714565d459`. Ba tháng sau, các Delta version, video hash, luật drop/split, MSSV và mã pipeline/dbt cho phép kiểm tra và tái tạo đúng dataset.
 
 ## Bước 5 · Điều phối và phục vụ
 
 ### Câu 9
-Mô tả chính xác điều xảy ra khi trip của bạn sập rồi chạy lại: bao nhiêu task chuyển đỏ, bao nhiêu task `upstream_failed`, bạn clear gì, dữ liệu có nhân đôi không, `dataset_version` có đổi không? Bằng chứng (ảnh, số) là gì?
 
-(trả lời ở đây)
+Với `LAB_FAIL_ONCE=trip-04868`, đúng **1** task đỏ: `silver_frames[13]`; **7** task downstream chuyển `upstream_failed`. Ảnh `airflow_failed_log.png` chứa `simulated crash while extracting trip-04868`, còn `airflow_failed_mapped_tasks.png` cho thấy 25 success/1 failed. Mình chỉ chọn **Clear task** tại map index 13; hộp thoại báo 8 affected tasks (partition đỏ + 7 downstream). Chỉ partition 13 được extract lại, sau đó DAG xanh; dữ liệu không nhân đôi nhờ overwrite theo trip và version vẫn `3b85ec0fa3d1`, kiểm tra cuối vẫn 27/27.
 
 ### Câu 10
-Nâng từ 2 drive lên **500 xe mỗi ngày**: ba thành phần nào của pipeline này sẽ vỡ đầu tiên, và bạn thay bằng gì (nối với slide 12, 22, 23)?
 
-(trả lời ở đây)
+Ở 500 xe/ngày, ba điểm nghẽn đầu tiên là: (1) một MinIO node/volume cho video và ảnh, thay bằng object storage phân tán có lifecycle/partition; (2) FFmpeg chạy tuần tự với Airflow `LocalExecutor`, parallelism 2, thay bằng worker pool Kubernetes/Celery/Ray và autoscale theo trip; (3) DuckDB file đơn + dbt và Postgres phục vụ đồng thời BI, thay bằng engine phân tán/lakehouse catalog và warehouse có compute tách storage. Đồng thời cần event ingestion, backpressure, monitoring/SLA và partition theo ngày/xe để backfill không quét toàn bộ dữ liệu.
 
-## Câu hỏi riêng của bạn trên Metabase
+## Câu hỏi riêng trên Metabase
 
-Câu SQL bạn thêm vào dashboard và điều nó cho biết:
+SQL đã thêm vào dashboard:
 
-(trả lời ở đây)
+```sql
+select drive_id, trip_id, frames, frames_kept,
+       round(100.0 * (frames - frames_kept) / nullif(frames, 0), 1) as dropped_pct,
+       lighting, conditions
+from marts.mart_trip_summary
+order by dropped_pct desc, drive_id, trip_id
+limit 10;
+```
+
+Câu hỏi trả lời “trip nào có tỷ lệ khung bị loại cao nhất?”. Kết quả là `drive_a / trip-04622`: **34/60** khung bị loại, tương đương **56,7%**; tiếp theo là `trip-03904` với **50,0%**. Đây là tín hiệu để ưu tiên kiểm tra camera/frozen frames của drive A và cảnh cụ thể trước khi huấn luyện.
 
 ## Nhìn lại
 
-Điều bạn thấy bất ngờ nhất, điều gì còn chưa rõ, và một lỗi dữ liệu mà bạn nghĩ pipeline **chưa** bắt được (nếu có). Tối đa 8 dòng.
-
-(trả lời ở đây)
+Điều bất ngờ nhất là chỉ cần split sai cấp độ frame đã làm cả 26 trip rò sang test, trong khi pipeline vẫn có thể trông “đúng” nếu chỉ nhìn số lượng split. Mình hiểu rõ hơn vai trò riêng của quarantine, quality gate và commit Delta trong khả năng audit/retry. Điểm còn muốn khảo sát thêm là chọn dHash thích nghi theo tốc độ/FPS thay vì một ngưỡng cố định. Một lỗi pipeline chưa bắt rõ là telemetry hợp lệ về range nhưng bị “kẹt” ở cùng một giá trị lâu bất thường; nên bổ sung kiểm tra sensor-stuck theo cửa sổ thời gian.
